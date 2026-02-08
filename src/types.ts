@@ -45,7 +45,14 @@ export type RelationType =
   | "depends_on"
   | "implements"
   | "calls"
-  | "configured_by";
+  | "configured_by"
+  | "completes"
+  | "verifies"
+  | "part_of"
+  | "produces"
+  | "consumes"
+  | "informs"
+  | "includes";
 
 // ---- Tool input types ----
 

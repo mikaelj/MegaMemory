@@ -89,7 +89,7 @@ Add megamemory as a stdio MCP server. The command is just `megamemory` (no argum
 
 **Concept kinds:** `feature` · `module` · `pattern` · `config` · `decision` · `component`
 
-**Relationship types:** `connects_to` · `depends_on` · `implements` · `calls` · `configured_by`
+**Relationship types:** `connects_to` · `depends_on` · `implements` · `calls` · `configured_by` · `completes` · `verifies` · `part_of` · `produces` · `consumes` · `informs` · `includes`
 
 ---
 

@@ -161,6 +161,7 @@ async function startMcpServer() {
   ]);
   const RelationEnum = z.enum([
     "connects_to", "depends_on", "implements", "calls", "configured_by",
+    "completes", "verifies", "part_of", "produces", "consumes", "informs", "includes",
   ]);
 
   // ---- Register tools ----
