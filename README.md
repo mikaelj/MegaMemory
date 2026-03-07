@@ -236,6 +236,26 @@ When an AI agent runs `/merge`, it calls `list_conflicts`, verifies both version
 
 ---
 
+### Development
+
+```bash
+git clone https://github.com/0xK3vin/MegaMemory.git
+cd MegaMemory
+npm install
+```
+
+#### Running tests
+
+```bash
+npm test              # run all tests once
+npx vitest            # run in watch mode
+npx vitest run db     # run a specific test file by name
+```
+
+The test suite includes unit tests for the database layer, embeddings, merge engine, timeline, conflict detection, and a **concurrency stress test** that spawns multiple worker threads hitting the same SQLite database simultaneously to validate WAL mode and retry logic.
+
+---
+
 ### License
 
 [MIT](./LICENSE)

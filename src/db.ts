@@ -7,6 +7,7 @@ const SCHEMA_VERSION = 4;
 
 export class KnowledgeDB {
   private db: Database.Database;
+  private _txDepth = 0;
 
   constructor(dbPath: string) {
     // Ensure directory exists
@@ -18,8 +19,20 @@ export class KnowledgeDB {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 1000");
+    this.db.pragma("busy_timeout = 5000");
     this.db.pragma("synchronous = NORMAL");
+    
+    const autoCheckpointPragma = this.db.pragma("wal_autocheckpoint", { simple: true });
+    const autoCheckpoint =
+      typeof autoCheckpointPragma === "object" && autoCheckpointPragma !== null
+        ? (autoCheckpointPragma as Record<string, unknown>).wal_autocheckpoint
+        : autoCheckpointPragma;
+    
+    if (autoCheckpoint === 0 || autoCheckpoint === undefined) {
+      console.warn("megamemory: wal_autocheckpoint not set, configuring to 1000");
+      this.db.pragma("wal_autocheckpoint = 1000");
+    }
+    
     this.migrate();
   }
 
@@ -177,14 +190,50 @@ export class KnowledgeDB {
   }
 
   runInTransaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const result = fn();
-      this.db.exec("COMMIT");
-      return result;
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
+    if (this._txDepth > 0) {
+      // Already inside a transaction — just run the callback
+      this._txDepth++;
+      try {
+        return fn();
+      } finally {
+        this._txDepth--;
+      }
+    }
+
+    return this.runWithRetry(() => {
+      this._txDepth++;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const result = fn();
+        this.db.exec("COMMIT");
+        return result;
+      } catch (err) {
+        this.db.exec("ROLLBACK");
+        throw err;
+      } finally {
+        this._txDepth--;
+      }
+    });
+  }
+
+  /**
+   * Retry a synchronous function on SQLITE_BUSY errors with exponential backoff.
+   * Uses Atomics.wait() for non-spinning synchronous sleep.
+   */
+  runWithRetry<T>(fn: () => T, maxRetries = 3): T {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return fn();
+      } catch (err: unknown) {
+        const isBusy =
+          err instanceof Error &&
+          (err.message.includes("SQLITE_BUSY") ||
+            err.message.includes("database is locked"));
+        if (!isBusy || attempt >= maxRetries) throw err;
+        // Exponential backoff: 100ms, 200ms, 400ms
+        const ms = 100 * Math.pow(2, attempt);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      }
     }
   }
 
@@ -323,20 +372,22 @@ export class KnowledgeDB {
   }
 
   softDeleteNode(id: string, reason: string): boolean {
-    const stmt = this.db.prepare(`
-      UPDATE nodes SET removed_at = datetime('now'), removed_reason = @reason, updated_at = datetime('now')
-      WHERE id = @id AND removed_at IS NULL
-    `);
-    const result = stmt.run({ id, reason });
+    return this.runInTransaction(() => {
+      const stmt = this.db.prepare(`
+        UPDATE nodes SET removed_at = datetime('now'), removed_reason = @reason, updated_at = datetime('now')
+        WHERE id = @id AND removed_at IS NULL
+      `);
+      const result = stmt.run({ id, reason });
 
-    // Also remove edges involving this node
-    if (result.changes > 0) {
-      this.db
-        .prepare("DELETE FROM edges WHERE from_id = ? OR to_id = ?")
-        .run(id, id);
-    }
+      // Also remove edges involving this node
+      if (result.changes > 0) {
+        this.db
+          .prepare("DELETE FROM edges WHERE from_id = ? OR to_id = ?")
+          .run(id, id);
+      }
 
-    return result.changes > 0;
+      return result.changes > 0;
+    });
   }
 
   // ---- Edge CRUD ----
@@ -609,11 +660,13 @@ export class KnowledgeDB {
   }
 
   hardDeleteNode(id: string): boolean {
-    this.deleteEdgesForNode(id);
-    const result = this.db
-      .prepare("DELETE FROM nodes WHERE id = ?")
-      .run(id);
-    return result.changes > 0;
+    return this.runInTransaction(() => {
+      this.deleteEdgesForNode(id);
+      const result = this.db
+        .prepare("DELETE FROM nodes WHERE id = ?")
+        .run(id);
+      return result.changes > 0;
+    });
   }
 
   insertNodeRaw(node: {
@@ -869,7 +922,17 @@ export class KnowledgeDB {
     return stmt.all({ timestamp }) as EdgeRow[];
   }
 
+  integrityCheck(): string {
+    const result = this.db.pragma("integrity_check", { simple: true });
+    // libsql returns { integrity_check: "ok" } instead of raw "ok" like better-sqlite3
+    if (typeof result === "object" && result !== null) {
+      return (result as Record<string, unknown>).integrity_check as string;
+    }
+    return result as string;
+  }
+
   close(): void {
+    // No manual checkpoint — SQLite auto-checkpoint handles WAL safely under concurrency
     this.db.close();
   }
 }

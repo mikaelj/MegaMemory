@@ -166,6 +166,17 @@ async function startMcpServer() {
     path.join(process.cwd(), ".megamemory", "knowledge.db");
 
   const db = new KnowledgeDB(DB_PATH);
+
+  // Startup integrity check
+  try {
+    const integrity = db.integrityCheck();
+    if (integrity !== "ok") {
+      console.error(`megamemory WARNING: integrity_check returned: ${integrity}`);
+    }
+  } catch (err) {
+    console.error(`megamemory WARNING: integrity_check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   const timeline = createTimelineLogger(db);
 
   const server = new McpServer({
@@ -488,4 +499,19 @@ async function startMcpServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`megamemory MCP server started (db: ${DB_PATH})`);
+
+  // Graceful shutdown — ensure WAL/SHM files are cleaned up
+  let closed = false;
+  const shutdown = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      db.close();
+    } catch {
+      // Best-effort
+    }
+  };
+  process.on("SIGINT", () => { shutdown(); process.exit(0); });
+  process.on("SIGTERM", () => { shutdown(); process.exit(0); });
+  process.on("beforeExit", shutdown);
 }
